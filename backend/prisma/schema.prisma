@@ -1,0 +1,331 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================================================
+// PostgreSQL Enums
+// ============================================================================
+
+enum UserRole {
+  STUDENT
+  STAFF
+  ADMIN
+}
+
+enum ReportType {
+  LOST
+  FOUND
+}
+
+enum ItemStatus {
+  ACTIVE
+  POTENTIAL_MATCH
+  CLAIM_PENDING
+  UNDER_VERIFICATION
+  RETURNED
+  CLOSED
+}
+
+enum MatchStatus {
+  PENDING
+  CONFIRMED
+  DISMISSED
+  RESOLVED
+}
+
+enum ClaimStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  RETURNED
+}
+
+enum EvidenceType {
+  TEXT_DESCRIPTION
+  SERIAL_NUMBER
+  RECEIPT_REFERENCE
+  EXTERNAL_DOCUMENT_URL
+  PHOTO_REFERENCE
+}
+
+enum AuditAction {
+  USER_REGISTERED
+  REPORT_CREATED
+  REPORT_UPDATED
+  REPORT_STATUS_CHANGED
+  MATCH_CREATED
+  MATCH_REVIEWED
+  CLAIM_SUBMITTED
+  CLAIM_REVIEWED
+  CLAIM_APPROVED
+  CLAIM_REJECTED
+  CUSTODY_RELEASED
+}
+
+// ============================================================================
+// 1. User
+// ============================================================================
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique @db.VarChar(255)
+  campusId     String   @unique @map("campus_id") @db.VarChar(32)
+  fullName     String   @map("full_name") @db.VarChar(160)
+  department   String   @db.VarChar(160)
+  role         UserRole @default(STUDENT)
+  passwordHash String   @map("password_hash") @db.Text
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // Relations
+  reportedItems   Item[]     @relation("ItemReporter")
+  submittedClaims Claim[]    @relation("ClaimClaimant")
+  reviewedClaims  Claim[]    @relation("ClaimReviewer")
+  reviewedMatches Match[]    @relation("MatchReviewer")
+  auditLogs       AuditLog[] @relation("AuditActor")
+
+  @@index([role])
+  @@index([department])
+  @@map("users")
+}
+
+// ============================================================================
+// 2. Category
+// ============================================================================
+
+model Category {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @unique @db.VarChar(100)
+  slug        String   @unique @db.VarChar(100)
+  description String?  @db.Text
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // Relations
+  items Item[]
+
+  @@index([isActive])
+  @@map("categories")
+}
+
+// ============================================================================
+// 3. Location
+// ============================================================================
+
+model Location {
+  id           String   @id @default(uuid()) @db.Uuid
+  code         String   @unique @db.VarChar(32)
+  buildingName String   @map("building_name") @db.VarChar(160)
+  zoneName     String   @map("zone_name") @db.VarChar(160)
+  custodyDesk  String?  @map("custody_desk") @db.VarChar(160)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // Relations
+  items Item[]
+
+  @@unique([buildingName, zoneName])
+  @@index([buildingName])
+  @@index([isActive])
+  @@map("locations")
+}
+
+// ============================================================================
+// 4. Item
+// ============================================================================
+
+model Item {
+  id                     String     @id @default(uuid()) @db.Uuid
+  referenceCode          String     @unique @map("reference_code") @db.VarChar(32)
+  reportType             ReportType @map("report_type")
+  title                  String     @db.VarChar(200)
+  description            String     @db.Text
+  distinguishingFeatures String     @map("distinguishing_features") @db.Text
+  verificationPrompt     String?    @map("verification_prompt") @db.VarChar(255)
+  specificSpot           String     @map("specific_spot") @db.VarChar(200)
+  custodyLocation        String?    @map("custody_location") @db.VarChar(200)
+  occurredDate           DateTime   @map("occurred_date") @db.Date
+  timeWindow             String     @map("time_window") @db.VarChar(40)
+  status                 ItemStatus @default(ACTIVE)
+  createdAt              DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // Foreign Keys
+  reportedById String @map("reported_by_id") @db.Uuid
+  categoryId   String @map("category_id") @db.Uuid
+  locationId   String @map("location_id") @db.Uuid
+
+  // Relations (Restrict prevents cascading destruction of custody & match records)
+  reportedBy User     @relation("ItemReporter", fields: [reportedById], references: [id], onDelete: Restrict)
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
+  images       ItemImage[]
+  lostMatches  Match[]     @relation("LostItemMatches")
+  foundMatches Match[]     @relation("FoundItemMatches")
+  claims       Claim[]
+  auditLogs    AuditLog[]
+
+  @@index([reportType, status])
+  @@index([categoryId])
+  @@index([locationId])
+  @@index([reportedById])
+  @@index([occurredDate])
+  @@index([createdAt])
+  @@map("items")
+}
+
+// ============================================================================
+// 5. ItemImage (Object storage metadata only — NO binary bytes in PostgreSQL)
+// ============================================================================
+
+model ItemImage {
+  id           String   @id @default(uuid()) @db.Uuid
+  itemId       String   @map("item_id") @db.Uuid
+  storageKey   String   @unique @map("storage_key") @db.VarChar(512)
+  publicUrl    String   @map("public_url") @db.VarChar(1024)
+  mimeType     String   @map("mime_type") @db.VarChar(64)
+  altText      String?  @map("alt_text") @db.VarChar(255)
+  displayOrder Int      @default(0) @map("display_order")
+  isPrimary    Boolean  @default(false) @map("is_primary")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  // Relations
+  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([itemId, displayOrder])
+  @@map("item_images")
+}
+
+// ============================================================================
+// 6. Match
+// ============================================================================
+
+model Match {
+  id              String      @id @default(uuid()) @db.Uuid
+  lostItemId      String      @map("lost_item_id") @db.Uuid
+  foundItemId     String      @map("found_item_id") @db.Uuid
+  similarityScore Int         @map("similarity_score")
+  matchedSignals  Json        @map("matched_signals")
+  status          MatchStatus @default(PENDING)
+  reviewedById    String?     @map("reviewed_by_id") @db.Uuid
+  reviewedAt      DateTime?   @map("reviewed_at") @db.Timestamptz(6)
+  createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // Relations
+  lostItem   Item  @relation("LostItemMatches", fields: [lostItemId], references: [id], onDelete: Restrict)
+  foundItem  Item  @relation("FoundItemMatches", fields: [foundItemId], references: [id], onDelete: Restrict)
+  reviewedBy User? @relation("MatchReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  auditLogs AuditLog[]
+
+  // Prevent duplicate matches between the same lost and found items
+  @@unique([lostItemId, foundItemId])
+  @@index([lostItemId, status])
+  @@index([foundItemId, status])
+  @@index([similarityScore])
+  @@map("matches")
+}
+
+// ============================================================================
+// 7. Claim
+// ============================================================================
+
+model Claim {
+  id                    String      @id @default(uuid()) @db.Uuid
+  claimCode             String      @unique @map("claim_code") @db.VarChar(32)
+  itemId                String      @map("item_id") @db.Uuid
+  claimantId            String      @map("claimant_id") @db.Uuid
+  ownershipStatement    String      @map("ownership_statement") @db.Text
+  preferredPickupWindow String      @map("preferred_pickup_window") @db.VarChar(100)
+  pickupDesk            String?     @map("pickup_desk") @db.VarChar(160)
+  status                ClaimStatus @default(PENDING)
+  reviewedById          String?     @map("reviewed_by_id") @db.Uuid
+  reviewerNote          String?     @map("reviewer_note") @db.Text
+  rejectionReason       String?     @map("rejection_reason") @db.Text
+  reviewedAt            DateTime?   @map("reviewed_at") @db.Timestamptz(6)
+  collectedAt           DateTime?   @map("collected_at") @db.Timestamptz(6)
+  createdAt             DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // Relations
+  item       Item  @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  claimant   User  @relation("ClaimClaimant", fields: [claimantId], references: [id], onDelete: Restrict)
+  reviewedBy User? @relation("ClaimReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  evidences ClaimEvidence[]
+  auditLogs AuditLog[]
+
+  // Active duplicate claim uniqueness is enforced via PostgreSQL partial unique index
+  @@index([itemId, claimantId])
+  @@index([status, createdAt])
+  @@index([claimantId])
+  @@index([reviewedById])
+  @@map("claims")
+}
+
+// ============================================================================
+// 8. ClaimEvidence (Private storage keys & descriptions only — NO binary bytes)
+// ============================================================================
+
+model ClaimEvidence {
+  id                 String       @id @default(uuid()) @db.Uuid
+  claimId            String       @map("claim_id") @db.Uuid
+  evidenceType       EvidenceType @map("evidence_type")
+  label              String       @db.VarChar(120)
+  details            String       @db.Text
+  storageKey         String?      @unique @map("storage_key") @db.VarChar(512)
+  mimeType           String?      @map("mime_type") @db.VarChar(64)
+  fileSize           Int?         @map("file_size")
+  externalUrl        String?      @map("external_url") @db.VarChar(1024)
+  verifiedByReviewer Boolean      @default(false) @map("verified_by_reviewer")
+  createdAt          DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  // Relations
+  claim Claim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  @@index([claimId])
+  @@index([evidenceType])
+  @@map("claim_evidence")
+}
+
+// ============================================================================
+// 9. AuditLog
+// ============================================================================
+
+model AuditLog {
+  id         String      @id @default(uuid()) @db.Uuid
+  actorId    String      @map("actor_id") @db.Uuid
+  action     AuditAction
+  entityType String      @map("entity_type") @db.VarChar(64)
+  entityId   String      @map("entity_id") @db.Uuid
+  summary    String      @db.VarChar(255)
+  metadata   Json?
+  itemId     String?     @map("item_id") @db.Uuid
+  matchId    String?     @map("match_id") @db.Uuid
+  claimId    String?     @map("claim_id") @db.Uuid
+  createdAt  DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  // Relations
+  actor User   @relation("AuditActor", fields: [actorId], references: [id], onDelete: Restrict)
+  item  Item?  @relation(fields: [itemId], references: [id], onDelete: SetNull)
+  match Match? @relation(fields: [matchId], references: [id], onDelete: SetNull)
+  claim Claim? @relation(fields: [claimId], references: [id], onDelete: SetNull)
+
+  @@index([actorId])
+  @@index([action, createdAt])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

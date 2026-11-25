@@ -1,0 +1,6 @@
+{
+  "name": "CampusFind",
+  "description": "Secure Campus Lost & Found Management System for university students and campus safety administrators.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
